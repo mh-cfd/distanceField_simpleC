@@ -3,9 +3,11 @@ CONFIG += console
 CONFIG -= app_bundle
 CONFIG -= qt
 
-QMAKE_CXXFLAGS_RELEASE += -O3
+QMAKE_CFLAGS_RELEASE += -O3 -msse2 -march=native
 
-QMAKE_LFLAGS += -O3
+QMAKE_CFLAGS += -O3 -msse2 -march=native
+
+QMAKE_LFLAGS += -O3 -msse2 -march=native
 
 SOURCES += main.c
 

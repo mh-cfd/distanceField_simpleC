@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <math.h>
-
+#include <x86intrin.h>
 #define N_TRIS_MAX 20000
 
 typedef struct{
@@ -28,6 +28,11 @@ typedef struct {
     double m_xMin, m_xMax, m_yMin, m_yMax, m_zMin, m_zMax;
 
     double w_x0, w_y0, w_z0, w_x1, w_y1, w_z1;
+    double *matr_1; //line1
+    double *p_tr; //transformed points
+    double *shP_1;
+    double *shP_2;
+    double *ang;
 } model;
 
 
@@ -246,7 +251,7 @@ double distP_tri(tri* t, v3* point, double* dot_out) {
     E12 = p.r[1]*t->shP[1].r[2];
     E23 = p.r[1]*(t->shP[2].r[2] - t->shP[1].r[2]) - (p.r[2] - t->shP[1].r[2])*t->shP[2].r[1];
     E31 = p.r[1]*(-t->shP[2].r[2]) - p.r[2]*(-t->shP[2].r[1]);
-
+//printf("E12=%f E23=%f E31=%f ------ \n", E12,E23,E31);
 
     if(E12>-1.e-15 && E23>-1.e-15 && E31>-1e-15) {   //inside
         dist = fabs(p.r[0]);
@@ -389,7 +394,7 @@ double distP_tri_optimized(tri* t, v3* point, double* dot_out) {
     }
 
     if(E31 < 0) {  //right side p1p2, left side p3p1
-        mult = dotProd(t->shP[2], p);
+        mult = DOT(t->shP[2], p);
         if(mult < 0) {  //p1 is closest
             (*dot_out)*=t->m_vert_angle[0];
             return LEN2(p);
@@ -422,7 +427,7 @@ double distP_tri_optimized(tri* t, v3* point, double* dot_out) {
         temp2.r[1] = p.r[1] - t->shP[1].r[1];
         temp2.r[2] = p.r[2] - t->shP[1].r[2];
 
-        mult = dotProd(temp1, temp2);
+        mult = DOT(temp1, temp2);
         if(mult < 0) {  //p2 is closest
             (*dot_out)*=t->m_vert_angle[1];
             return LEN2(temp2);
@@ -549,7 +554,63 @@ void modelLoad(const char *fname, model* m) {
     m->w_y0 -= dy; m->w_y1 += dy;
     m->w_z0 -= dz; m->w_z1 += dz;
 
+//for fast sse:
+    m->matr_1 = (double*)_mm_malloc(sizeof(double)*(m->n_m_tris*16), 32);
+    m->p_tr =   (double*)_mm_malloc(sizeof(double)*(m->n_m_tris*4), 32);
 
+    m->shP_1 =   (double*)_mm_malloc(sizeof(double)*(m->n_m_tris*4), 32);
+    m->shP_2 =   (double*)_mm_malloc(sizeof(double)*(m->n_m_tris*4), 32);
+
+    m->ang =   (double*)_mm_malloc(sizeof(double)*(m->n_m_tris*4), 32);
+
+
+    for(int i = 0; i <  m->n_m_tris; i++) {
+        //4x 4y 4z 4w
+        m->matr_1[i*16]=m->m_tris[i].matrix[0][0];
+        m->matr_1[i*16+1]=m->m_tris[i].matrix[1][0];
+        m->matr_1[i*16+2]=m->m_tris[i].matrix[2][0];
+        m->matr_1[i*16+3]=0.0;
+
+        m->matr_1[i*16+4]=m->m_tris[i].matrix[0][1];
+        m->matr_1[i*16+5]=m->m_tris[i].matrix[1][1];
+        m->matr_1[i*16+6]=m->m_tris[i].matrix[2][1];
+        m->matr_1[i*16+7]=0.0;
+
+        m->matr_1[i*16+8]=m->m_tris[i].matrix[0][2];
+        m->matr_1[i*16+9]=m->m_tris[i].matrix[1][2];
+        m->matr_1[i*16+10]=m->m_tris[i].matrix[2][2];
+        m->matr_1[i*16+11]=0.0;
+
+        m->matr_1[i*16+12]=m->m_tris[i].matrix[0][3];
+        m->matr_1[i*16+13]=m->m_tris[i].matrix[1][3];
+        m->matr_1[i*16+14]=m->m_tris[i].matrix[2][3];
+        m->matr_1[i*16+15]=0.0;
+
+        m->p_tr[i*4]=1.0;
+        m->p_tr[i*4+1]=1.0;
+        m->p_tr[i*4+2]=1.0;
+        m->p_tr[i*4+3]=1.0;
+        //shP[1].r[0] (wall normal) is always 0 isn't it?
+        //shP[1].r[0]=0 shP[1].r[1]=0 shP[2].r[0]=0
+        m->shP_1[i*4]   = m->m_tris[i].shP[1].r[0];
+        m->shP_1[i*4+1] = m->m_tris[i].shP[1].r[1];
+        m->shP_1[i*4+2] = m->m_tris[i].shP[1].r[2];
+        m->shP_1[i*4+3] = (m->m_tris[i].shP[2].r[2] -
+                      m->m_tris[i].shP[1].r[2]);
+
+        m->shP_2[i*4]   = m->m_tris[i].shP[2].r[0];
+        m->shP_2[i*4+1] = m->m_tris[i].shP[2].r[1];
+        m->shP_2[i*4+2] = m->m_tris[i].shP[2].r[2];
+        m->shP_2[i*4+3] =m->m_tris[i].shP[1].r[2] *
+                        m->m_tris[i].shP[2].r[1];
+
+
+        m->ang[i*4]   = m->m_tris[i].m_vert_angle[0];
+        m->ang[i*4+1] = m->m_tris[i].m_vert_angle[1];
+        m->ang[i*4+2] = m->m_tris[i].m_vert_angle[2];
+        m->ang[i*4+3] = 0.0;
+//printf("shp1 =%f shp2 =%f shp3 =%f \n", m->m_tris[i].shP[2].r[0],m->m_tris[i].shP[2].r[1],m->m_tris[i].shP[2].r[2]);
+    }
 
     return;
 }
@@ -577,7 +638,7 @@ double modelDistP(model* m, v3* point)
     return min_dist*(2.0*(sum_dot>0.0)-1.0);
 }
 
-double modelDistP_fast(model* m, v3* point)
+double  modelDistP_fast(model* m, v3* point)
 {
     double min_dist =1e10;
     double sum_dot=0.0;//(0,0,0);
@@ -601,4 +662,173 @@ double modelDistP_fast(model* m, v3* point)
     return sqrt(min_dist)*(2.0*(sum_dot>0.0)-1.0);
 }
 
+
+void dot4x4(double *aosoa, double *b, double *out) {
+    __m256d vx = _mm256_load_pd(&aosoa[0]);
+    __m256d vy = _mm256_load_pd(&aosoa[4]);
+    __m256d vz = _mm256_load_pd(&aosoa[8]);
+    __m256d vw = _mm256_load_pd(&aosoa[12]);
+    __m256d brod1 = _mm256_set1_pd(b[0]);
+    __m256d brod2 = _mm256_set1_pd(b[1]);
+    __m256d brod3 = _mm256_set1_pd(b[2]);
+    __m256d brod4 = _mm256_set1_pd(b[3]);
+    __m256d dot4 = _mm256_add_pd(
+        _mm256_add_pd(_mm256_mul_pd(brod1, vx), _mm256_mul_pd(brod2, vy)),
+        _mm256_add_pd(_mm256_mul_pd(brod3, vz), _mm256_mul_pd(brod4, vw)));
+    _mm256_store_pd(out, dot4);
+
+}
+
+/*#define X_ (i*4)
+#define Y_ (i*4+1)
+#define Z_ (i*4+2)
+#define W_ (i*4+3)
+*/
+double dist_sse(model* m,int i,double* dot_out)
+{
+
+        int X_=i*4;
+        int Y_=i*4+1;
+        int Z_=i*4+2;
+        int W_=i*4+3;
+
+  //  double E12, E23, E31; //edges equation results: E<0 -> point on left side, E>0 -> point on right side
+
+    (*dot_out)=m->p_tr[X_]; //normal signed distance
+    //E(y,z) = (y-Y)*dZ - (z-Z)*dY
+
+    /*
+    E12 = m->p_tr[X_]*t->shP[1].r[2];
+    E23 = m->p_tr[Y_]*(t->shP[2].r[2] - t->shP[1].r[2]) - (m->p_tr[Z_] - t->shP[1].r[2])*t->shP[2].r[1];
+    E31 = m->p_tr[Y_]*(-t->shP[2].r[2]) - m->p_tr[Z_]*(-t->shP[2].r[1]);
+*/
+
+        double aa=m->p_tr[Z_]*m->shP_2[Y_];
+   double E12 = m->p_tr[Y_]*m->shP_1[Z_];
+   double E23 =  m->p_tr[Y_]*m->shP_1[W_] - aa + m->shP_2[W_];
+   double E31 = -m->p_tr[Y_]*m->shP_2[Z_] + aa;
+
+   // printf("E12=%f E23=%f E31=%f \n",E12,E23,E31);
+
+    if(E12>-1.e-15 && E23>-1.e-15 && E31>-1e-15) {   //inside
+        return m->p_tr[X_] * m->p_tr[X_];
+
+    }
+    double mult = 0;
+    if(E12 < 0) { //left side of p1p2
+        mult = m->p_tr[Z_]*m->shP_1[Z_];//DOT(t->shP[1], p);
+        if(mult < 0) {  //p1 is closest
+            (*dot_out)*=m->ang[i*4];//t->m_vert_angle[0];
+            return m->p_tr[X_]*m->p_tr[X_] + m->p_tr[Y_]*m->p_tr[Y_] + m->p_tr[Z_]*m->p_tr[Z_];
+
+        }
+        else {
+            if (mult <= m->shP_1[Z_]*m->shP_1[Z_]) {     //p1p2 is closest
+                return (m->p_tr[X_]*m->p_tr[X_] + m->p_tr[Y_]*m->p_tr[Y_]);
+
+            }
+            else {  //p2 is closest
+                v3 temp;
+                (*dot_out)*=m->ang[i*4+1];
+                temp.r[0] = m->p_tr[X_];
+                temp.r[1] = m->p_tr[Y_];
+                temp.r[2] = m->p_tr[Z_] - m->shP_1[Z_];
+                return  LEN2(temp);
+
+            }
+        }
+    }
+
+    if(E31 < 0) {  //right side p1p2, left side p3p1
+        mult =  m->p_tr[Y_]*m->shP_2[Y_] + m->p_tr[Z_]*m->shP_2[Z_];//DOT(t->shP[2], p);
+        if(mult < 0) {  //p1 is closest
+            (*dot_out)*=m->ang[i*4];
+            return (m->p_tr[X_]*m->p_tr[X_] + m->p_tr[Y_]*m->p_tr[Y_] + m->p_tr[Z_]*m->p_tr[Z_]);
+
+        }
+        else {
+            double l2= m->shP_2[Y_]*m->shP_2[Y_] + m->shP_2[Z_]*m->shP_2[Z_];//LEN2(t->shP[2]);
+            if (mult <= l2) {     //p1p3 is closest
+                double c2 = m->p_tr[Y_]*m->p_tr[Y_] + m->p_tr[Z_]*m->p_tr[Z_] - mult*mult/l2;
+                return (m->p_tr[X_]*m->p_tr[X_] + c2);
+            }
+            else {  //p3 is closest
+                v3 temp;
+                (*dot_out)*=m->ang[i*4+2];
+                temp.r[0] = m->p_tr[X_] ;
+                temp.r[1] = m->p_tr[Y_] - m->shP_2[Y_];
+                temp.r[2] = m->p_tr[Z_] - m->shP_2[Z_];
+                return LEN2(temp);
+            }
+        }
+    }
+
+    if(E23 < 0) {  //left side p2p3, right side of other
+        v3 temp1, temp2;
+
+        temp1.r[0] =0.0;
+        temp1.r[1] =m->shP_2[Y_];
+        temp1.r[2] =m->shP_2[Z_] - m->shP_1[Z_];
+
+        temp2.r[0] =m->p_tr[X_] ;
+        temp2.r[1] =m->p_tr[Y_] ;
+        temp2.r[2] =m->p_tr[Z_] - m->shP_1[Z_];
+
+        mult = temp1.r[1]*temp2.r[1] + temp1.r[2]*temp2.r[2];//DOT(temp1, temp2);
+        if(mult < 0) {  //p2 is closest
+            (*dot_out)*=m->ang[i*4+1];
+            return LEN2(temp2);
+        }
+        else {
+            double l2= temp1.r[1]*temp1.r[1] + temp1.r[2]*temp1.r[2];//LEN2(temp1);
+            if (mult <= l2) {     //p2p3 is closest
+                double c2 = temp2.r[1]*temp2.r[1] + temp2.r[2]*temp2.r[2] - mult*mult/l2;
+                return (m->p_tr[X_]*m->p_tr[X_] + c2);
+            }
+            else {  //p3 is closest
+                v3 temp;
+                (*dot_out)*=m->ang[i*4+2];
+                temp.r[0] = m->p_tr[X_] ;
+                temp.r[1] = m->p_tr[Y_] - m->shP_2[Y_];
+                temp.r[2] = m->p_tr[Z_] - m->shP_2[Z_];
+                return LEN2(temp);
+            }
+        }
+    }
+}
+
+double  modelDistP_SSE(model* m, v3* point)
+{
+
+
+     double b[] = {point->r[0],point->r[1],point->r[2],1};
+    for (int i=0; i<m->n_m_tris;i++)
+    {
+        dot4x4(&(m->matr_1[i*16]), b, &(m->p_tr[i*4])); //p_tr is now xyzw in local CS
+    }
+
+
+    double min_dist =1e10;
+    double sum_dot=0.0;//(0,0,0);
+    double delta=1e-5*1e-5;
+    for (int i=0; i<m->n_m_tris;i++)
+    {
+
+        double  dot_n;
+        double l= dist_sse(m,i,&dot_n);//distP_tri_optimized(&(m->m_tris[i]),point,&dot_n);
+
+        if (min_dist>=l-delta)
+        {
+            if  (fabs(l-min_dist)>=delta)
+                sum_dot=dot_n;
+            else
+                sum_dot+=dot_n;
+
+            min_dist=l;
+        }
+    }
+    return sqrt(min_dist)*(2.0*(sum_dot>0.0)-1.0);
+
+
+}
 #endif // CALC_DISTANCE_H
